@@ -4,16 +4,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import dateutil
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression,LogisticRegression
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
 import geopandas as gpd
+
 
 st.title("Analiza Amenințărilor Cibernetice Globale (2015–2024)")
 
 st.sidebar.header("Meniu")
 section = st.sidebar.radio("Selectați o secțiune:",
-                           ["Încărcare Fișier", "Vizualizare Date", "Filtrare & Analiză", "Prelucrare & Grafice",
-                            "Codificare Date", "Scalare Date", "Outlieri", "Hartă Geospațială"])
+    ["Încărcare Fișier", "Vizualizare Date", "Filtrare & Analiză", "Prelucrare & Grafice",
+     "Codificare Date", "Scalare Date", "Outlieri", "Hartă Geospațială",
+     "Clusterizare (KMeans)", "Regresie Logistică", "Regresie Multiplă"])
 
 data = None
 
@@ -180,7 +182,7 @@ elif section == "Prelucrare & Grafice":
     else:
         st.warning(" Încărcați un fișier mai întâi.")
 
-# Codificare date
+
 # Codificare date
 elif section == "Codificare Date":
     st.header("🌐 Codificare a datelor categorice")
@@ -317,3 +319,94 @@ elif section == "Hartă Geospațială":
 
         except Exception as e:
             st.error(f" Eroare la afișarea hărții: {e}")
+
+elif section == "Clusterizare (KMeans)":
+    st.header(" Clusterizare a țărilor în funcție de pierderi și frecvență")
+    if "data" in st.session_state:
+        data = st.session_state["data"]
+
+        if "Country" in data.columns and "Financial Loss (in Million $)" in data.columns:
+            grouped = data.groupby("Country").agg({
+                "Financial Loss (in Million $)": "sum",
+                "Attack Type": "count"
+            }).rename(columns={"Attack Type": "Attack Count"}).dropna()
+
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(grouped)
+
+            k = st.slider("Selectați numărul de clustere (k):", 2, 6, 3)
+            from sklearn.cluster import KMeans
+
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            grouped["Cluster"] = kmeans.fit_predict(features_scaled)
+
+            st.write(" Rezultatul clusterizării:")
+            st.dataframe(grouped.reset_index())
+
+            # Plot
+            fig, ax = plt.subplots()
+            scatter = ax.scatter(grouped["Financial Loss (in Million $)"], grouped["Attack Count"],
+                                 c=grouped["Cluster"], cmap="tab10")
+            ax.set_xlabel("Pierdere financiară")
+            ax.set_ylabel("Număr atacuri")
+            ax.set_title("Țările grupate în funcție de pierderi și atacuri")
+            st.pyplot(fig)
+
+elif section == "Regresie Logistică":
+    st.header(" Regresie logistică: prezicerea probabilității unui atac sever")
+    if "data" in st.session_state:
+        data = st.session_state["data"].copy()
+        if "Financial Loss (in Million $)" in data.columns and "Year" in data.columns:
+            data = data.dropna(subset=["Financial Loss (in Million $)", "Year"])
+            # Binare: dacă pierderea > medie -> sever
+            data["severe"] = (data["Financial Loss (in Million $)"] > data["Financial Loss (in Million $)"].mean()).astype(int)
+
+            feature_cols = ["Year"]
+            if "Attack Type_encoded" in data.columns:
+                feature_cols.append("Attack Type_encoded")
+            X = data[feature_cols]
+            y = data["severe"]
+
+            model = LogisticRegression()
+            model.fit(X, y)
+            preds = model.predict(X)
+            acc = np.mean(preds == y)
+
+            st.success(f"Acuratețea modelului: {acc:.2f}")
+            st.write("Coeficienți model:")
+            coef_df = pd.DataFrame({
+                "Caracteristică": feature_cols,
+                "Coeficient": model.coef_[0]
+            })
+            st.dataframe(coef_df)
+
+            st.write("Exemplu de predicție:")
+            st.dataframe(data[feature_cols + ["Financial Loss (in Million $)", "severe"]].head())
+
+
+elif section == "Regresie Multiplă":
+    st.header(" Regresie multiplă cu statsmodels")
+    if "data" in st.session_state:
+        import statsmodels.api as sm
+        data = st.session_state["data"].copy()
+
+        if {"Financial Loss (in Million $)", "Year"}.issubset(data.columns):
+            data = data.dropna(subset=["Financial Loss (in Million $)", "Year"])
+            data["Attack Count"] = 1  # pentru agregare
+
+            grouped = data.groupby("Year").agg({
+                "Financial Loss (in Million $)": "mean",
+                "Attack Count": "sum"
+            }).rename(columns={"Financial Loss (in Million $)": "Mean_Loss"}).reset_index()
+
+            grouped["Year_Squared"] = grouped["Year"] ** 2
+
+            X = grouped[["Attack Count", "Year", "Year_Squared"]]
+            y = grouped["Mean_Loss"]
+            X = sm.add_constant(X)
+            model = sm.OLS(y, X).fit()
+
+            st.write(model.summary())
+            st.line_chart(grouped[["Mean_Loss"]])
+
+
